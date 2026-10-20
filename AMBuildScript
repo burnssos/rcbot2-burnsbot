@@ -154,6 +154,8 @@ class MMSConfig(object):
           # redefinition across dt_common.h and shareddefs.h. [APG]RoboCop[CL]
           '-Wno-macro-redefined',
         ]
+        # hl2sdk headers (imageformat.h, studio.h) trip this on newer clang
+        cxx.cxxflags += ['-Wno-reorder-ctor']
 
     elif cxx.like('msvc'):
       # Always use /MT (release CRT) even in debug builds, because the
