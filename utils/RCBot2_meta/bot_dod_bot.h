@@ -99,12 +99,15 @@ typedef struct
 
 typedef enum : std::uint8_t
 {
-	DOD_CLASS_RIFLEMAN = 1,
-	DOD_CLASS_ASSAULT = 2,
-	DOD_CLASS_SUPPORT = 3,
-	DOD_CLASS_SNIPER = 4,
-	DOD_CLASS_MACHINEGUNNER = 5,
-	DOD_CLASS_ROCKET = 6
+	// must match the game's m_iPlayerClass (0-based, -1 = none) and the
+	// order of g_DODClassCmd -- a 1-based enum shifts every class check by one
+	DOD_CLASS_RIFLEMAN = 0,
+	DOD_CLASS_ASSAULT = 1,
+	DOD_CLASS_SUPPORT = 2,
+	DOD_CLASS_SNIPER = 3,
+	DOD_CLASS_MACHINEGUNNER = 4,
+	DOD_CLASS_ROCKET = 5,
+	DOD_CLASS_MAX = 6
 }DOD_Class;
 
 enum : std::uint8_t
@@ -304,6 +307,7 @@ private:
 	float m_fLastCaptureEvent;
 	float m_fNextCheckNeedAmmo;
 	float m_fNextCheckAlone; // to see if bot should tell others to stick together
+	float m_fIdleReloadFor; // m_fLastSeeEnemy value we last did an idle reload for
 
 	bool m_bDroppedAmmoThisRound;
 

@@ -250,7 +250,7 @@ bool CDODBot :: setVisible ( edict_t *pEntity, const bool bVisible )
 		// grenade_smoke
 		// 012345678
 		// don't run away from smoke grenades
-		else if ( (pEntity!=m_pEnemyGrenade) && (szClassname[8]!='s') && (std::strncmp(szClassname,"grenade",7) == 0 ) && 
+		else if ( (pEntity!=m_pEnemyGrenade) && (std::strncmp(szClassname,"grenade",7) == 0 ) && (std::strncmp(szClassname,"grenade_smoke",13) != 0) && 
 			((CClassInterface::getGrenadeThrower(pEntity) == m_pEdict) || 
 			 ((CClassInterface::getTeam(pEntity) == m_iEnemyTeam)||bFriendlyFire)))
 		{
@@ -352,14 +352,14 @@ bool CDODBot :: startGame ()
 		return false;
 	}
 
-	if ( (m_iDesiredClass < 0) || (m_iDesiredClass > 5) )
+	if ( (m_iDesiredClass < 0) || (m_iDesiredClass >= DOD_CLASS_MAX) )
 		chooseClass(false);
 
 	if (CClassInterface::getPlayerClassDOD(m_pEdict) < 0)
 		return false;
 
 	// not the correct class? and desired class is valid?
-	if ( (m_iDesiredClass >= 0) && (m_iDesiredClass <= 5) && (m_iDesiredClass != CClassInterface::getPlayerClassDOD(m_pEdict)) )
+	if ( (m_iDesiredClass >= 0) && (m_iDesiredClass < DOD_CLASS_MAX) && (m_iDesiredClass != CClassInterface::getPlayerClassDOD(m_pEdict)) )
 	{
 		// Sanity check: Prevent spamming joinclass every frame [APG]RoboCop[CL]
 		if ( m_fChangeClassTime < engine->Time() )
@@ -474,7 +474,7 @@ void CDODBot :: seeFriendlyDie ( edict_t *pDied, edict_t *pKiller, CWeapon *pWea
 			if ( (pclass == DOD_CLASS_SNIPER) && pWeapon->isZoomable() )
 			{
 				const Vector vecEnemy = CBotGlobals::entityOrigin(pKiller);
-				if (m_LastHearVoiceCommand == DOD_VC_SNIPER && m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_US) && !m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_GER))
+				if (m_LastHearVoiceCommand == DOD_VC_SNIPER && (m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_US) || m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_GER)))
 					addVoiceCommand(DOD_VC_USE_GRENADE);
 				else
 					addVoiceCommand(DOD_VC_SNIPER);
@@ -495,7 +495,7 @@ void CDODBot :: seeFriendlyDie ( edict_t *pDied, edict_t *pKiller, CWeapon *pWea
 			else if ( (pclass == DOD_CLASS_MACHINEGUNNER) && pWeapon->isDeployable() )
 			{
 				const Vector vecEnemy = CBotGlobals::entityOrigin(pKiller);
-				if ( (m_LastHearVoiceCommand == DOD_VC_MGAHEAD) && m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_US) && !m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_GER) )
+				if ( (m_LastHearVoiceCommand == DOD_VC_MGAHEAD) && (m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_US) || m_pWeapons->hasWeapon(DOD_WEAPON_FRAG_GER)) )
 					addVoiceCommand(DOD_VC_USE_GRENADE);
 				else
 					addVoiceCommand(DOD_VC_MGAHEAD);
@@ -598,7 +598,10 @@ void CDODBot :: seeFriendlyDie ( edict_t *pDied, edict_t *pKiller, CWeapon *pWea
 					CWaypoint *pWaypoint;
 					Vector vSearchForMachineGunPointOrigin = m_vListenPosition-getOrigin();
 
-					vSearchForMachineGunPointOrigin = vSearchForMachineGunPointOrigin/vSearchForMachineGunPointOrigin.Length();
+					const float fLen = vSearchForMachineGunPointOrigin.Length();
+
+					if ( fLen > 1.0f )
+						vSearchForMachineGunPointOrigin = vSearchForMachineGunPointOrigin/fLen;
 
 					vSearchForMachineGunPointOrigin = getOrigin() + (vSearchForMachineGunPointOrigin*CWaypointLocations::REACHABLE_RANGE);
 
@@ -783,6 +786,7 @@ void CDODBot :: spawnInit ()
 
 	m_fNextCheckAlone = 0.0f;
 	m_fNextCheckNeedAmmo = 0.0f;
+	m_fIdleReloadFor = 0.0f;
 
 	m_uSquadDetail.b1.said_area_clear = true;
 
@@ -1088,8 +1092,10 @@ void CDODBot :: touchedWpt ( CWaypoint *pWaypoint, const int iNextWaypoint, cons
 void CDODBot :: changeClass ()
 {
 	const int iTeam = getTeam();
-	// change class
-	//selectClass();
+
+	if ( (iTeam != TEAM_ALLIES && iTeam != TEAM_AXIS) || (m_iDesiredClass < 0) || (m_iDesiredClass >= DOD_CLASS_MAX) )
+		return;
+
 	helpers->ClientCommand(m_pEdict,g_DODClassCmd[iTeam-2][m_iDesiredClass]);
 
 	m_fChangeClassTime = engine->Time() + randomFloat(bot_min_cc_time.GetFloat(),bot_max_cc_time.GetFloat());
@@ -1097,80 +1103,66 @@ void CDODBot :: changeClass ()
 
 void CDODBot :: chooseClass (const bool bIsChangingClass)
 {
+	// rcbot_force_class: 1 = rifleman ... 6 = rocket (same order as the class menu)
 	const int _forcedClass = rcbot_force_class.GetInt();
-	if (_forcedClass > 0 && _forcedClass < 10)
+
+	if (_forcedClass >= 1 && _forcedClass <= DOD_CLASS_MAX)
 	{
-		switch (_forcedClass)
-		{
-		case 1:
-			m_iDesiredClass = DOD_CLASS_RIFLEMAN;
-			break;
-		case 2:
-			m_iDesiredClass = DOD_CLASS_ASSAULT;
-			break;
-		case 3:
-			m_iDesiredClass = DOD_CLASS_SUPPORT;
-			break;
-		case 4:
-			m_iDesiredClass = DOD_CLASS_SNIPER;
-			break;
-		case 5:
-			m_iDesiredClass = DOD_CLASS_MACHINEGUNNER;
-			break;
-		case 6:
-			m_iDesiredClass = DOD_CLASS_ROCKET;
-			break;
-		}
+		m_iDesiredClass = _forcedClass - 1;
+		return;
 	}
-	else
+
+	std::array<float, DOD_CLASS_MAX> fClassFitness{};
+	fClassFitness.fill(1.0f);
+
+	const int iTeam = getTeam();
+
+	// prefer the lighter, more mobile classes; specialists are still picked,
+	// just less often
+	fClassFitness[DOD_CLASS_RIFLEMAN] *= 1.5f;
+	fClassFitness[DOD_CLASS_ASSAULT] *= 1.2f;
+	fClassFitness[DOD_CLASS_SUPPORT] *= 1.0f;
+	fClassFitness[DOD_CLASS_SNIPER] *= 0.6f;
+	fClassFitness[DOD_CLASS_MACHINEGUNNER] *= 0.8f;
+	fClassFitness[DOD_CLASS_ROCKET] *= 0.5f;
+
+	const int iCurrentClass = CClassInterface::getPlayerClassDOD(m_pEdict);
+
+	if (bIsChangingClass && (iCurrentClass >= 0) && (iCurrentClass < DOD_CLASS_MAX))
+		fClassFitness[iCurrentClass] = 0.1f;
+
+	// spread classes across the team
+	for (int i = 1; i <= gpGlobals->maxClients; i++)
 	{
-		std::array<float, 7U> fClassFitness{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-		float fTotalFitness = 0;
+		edict_t* pPlayer = INDEXENT(i);
 
-		const int iTeam = getTeam();
+		if ((pPlayer == m_pEdict) || !CBotGlobals::entityIsValid(pPlayer) || (CClassInterface::getTeam(pPlayer) != iTeam))
+			continue;
 
-		//TODO: allow bots to choose less heavy classes [APG]RoboCop[CL]
-		fClassFitness[DOD_CLASS_RIFLEMAN] *= 1.5f;
-		fClassFitness[DOD_CLASS_ASSAULT] *= 1.2f;
-		fClassFitness[DOD_CLASS_SUPPORT] *= 1.0f;
-		fClassFitness[DOD_CLASS_SNIPER] *= 0.6f;
-		fClassFitness[DOD_CLASS_MACHINEGUNNER] *= 0.8f;
-		fClassFitness[DOD_CLASS_ROCKET] *= 0.5f;
+		const int iClass = CClassInterface::getPlayerClassDOD(pPlayer);
 
-		if (bIsChangingClass && (m_iClass < 6))
-			fClassFitness[m_iClass] = 0.1f;
+		if ((iClass >= 0) && (iClass < DOD_CLASS_MAX))
+			fClassFitness[iClass] *= 0.6f;
+	}
 
-		for (int i = 1; i <= gpGlobals->maxClients; i++)
+	float fTotalFitness = 0.0f;
+
+	for (const float fClassFit : fClassFitness)
+		fTotalFitness += fClassFit;
+
+	const float fRandom = randomFloat(0, fTotalFitness);
+
+	fTotalFitness = 0.0f;
+	m_iDesiredClass = DOD_CLASS_RIFLEMAN;
+
+	for (int i = 0; i < DOD_CLASS_MAX; i++)
+	{
+		fTotalFitness += fClassFitness[i];
+
+		if (fRandom <= fTotalFitness)
 		{
-			edict_t* pPlayer = INDEXENT(i);
-
-			if (CBotGlobals::entityIsValid(pPlayer) && (CClassInterface::getTeam(pPlayer) == iTeam))
-			{
-				const int iClass = CClassInterface::getPlayerClassDOD(pPlayer);
-
-				if ((iClass >= 0) && (iClass < 6))
-					fClassFitness[iClass] *= 0.6f;
-			}
-		}
-
-		for (const float fClassFit : fClassFitness)
-			fTotalFitness += fClassFit;
-
-		const float fRandom = randomFloat(0, fTotalFitness);
-
-		fTotalFitness = 0.0f;
-
-		m_iDesiredClass = 0;
-
-		for (int i = 0; i < 6; i++)
-		{
-			fTotalFitness += fClassFitness[i];
-
-			if (fRandom <= fTotalFitness)
-			{
-				m_iDesiredClass = i;
-				break;
-			}
+			m_iDesiredClass = i;
+			break;
 		}
 	}
 }
@@ -1211,9 +1203,11 @@ void CDODBot :: modThink ()
 		{
 				// get score for this class
 				const float scoreValue = CDODMod::getScore(m_pEdict);
+				const float highestScore = CDODMod::getHighestScore();
+				const float fRatio = (highestScore > 0.0f) ? (scoreValue / highestScore) : 1.0f;
 
 				// if I think I could do better
-				if ( randomFloat(0.0f,1.0f) > (scoreValue / CDODMod::getHighestScore()) )
+				if ( randomFloat(0.0f,1.0f) > fRatio )
 				{
 					chooseClass(true);
 					changeClass();
@@ -1233,8 +1227,8 @@ void CDODBot :: modThink ()
 
 	if ( m_iTeam == TEAM_ALLIES ) // im allies
 		m_iEnemyTeam = TEAM_AXIS;
-	else if ( m_iEnemyTeam == TEAM_AXIS ) // im axis and my enemy team is wrong
-		m_iEnemyTeam = TEAM_ALLIES;
+	else if ( m_iTeam == TEAM_AXIS ) // im axis (was testing m_iEnemyTeam, so bots that
+		m_iEnemyTeam = TEAM_ALLIES;  // started on Axis never saw enemy grenades/rockets)
 
 	m_pCurrentWeapon = CClassInterface::getCurrentWeapon(m_pEdict);
 	pWeapon = getCurrentWeapon();
@@ -1335,10 +1329,15 @@ void CDODBot :: modThink ()
 		m_flSprintTime = engine->Time() + randomFloat(2.0f,6.0f);
 	}
 
-	if ((pWeapon && pWeapon->needToReload(this)) ||
-		(m_fLastSeeEnemy && m_fLastSeeEnemy + 5.0f < engine->Time()))
+	if ( pWeapon && pWeapon->needToReload(this) )
 	{
-		m_fLastSeeEnemy = 0;
+		m_pButtons->tap(IN_RELOAD);
+	}
+	else if ( (m_fLastSeeEnemy > 0.0f) && (m_fLastSeeEnemy + 5.0f < engine->Time()) && (m_fIdleReloadFor < m_fLastSeeEnemy) )
+	{
+		// top up once after a fight has gone quiet. This used to zero m_fLastSeeEnemy,
+		// which cut the 10 second grenade window down to 5 seconds
+		m_fIdleReloadFor = m_fLastSeeEnemy;
 		m_pButtons->tap(IN_RELOAD);
 	}
 
@@ -1848,6 +1847,9 @@ void CDODBot::hearVoiceCommand(edict_t* pPlayer, byte voiceCmd)
 	case DOD_VC_STICK_TOGETHER:
 		{
 			IPlayerInfo *p = playerinfomanager->GetPlayerInfo(pPlayer);
+
+			if ( p == nullptr ) // player left the server
+				break;
 
 			if ( inSquad() && (m_pSquad->GetLeader() == pPlayer) )
 			{
@@ -2586,7 +2588,7 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 
 		if ( CDODMod::m_Flags.isTeamMateDefusing(m_pEdict,m_iTeam,util->getIntData()) )
 			return false; // teammate doing the job already
-		break;
+		[[fallthrough]]; // shares the schedule building in BOT_UTIL_PLANT_BOMB below
 
 	case BOT_UTIL_PLANT_NEAREST_BOMB:
 		id = util->getIntData();
@@ -2596,9 +2598,9 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 		if ( util->getId() == BOT_UTIL_PLANT_NEAREST_BOMB )
 			iBombType = DOD_BOMB_PLANT;
 
-		if ( CDODMod::m_Flags.isTeamMatePlanting(m_pEdict,m_iTeam,id) )
+		if ( (iBombType == DOD_BOMB_PLANT) && CDODMod::m_Flags.isTeamMatePlanting(m_pEdict,m_iTeam,id) )
 			return false; // teammate doing the job already
-		break;
+		[[fallthrough]];
 
 	case BOT_UTIL_DEFUSE_BOMB:
 		if ( util->getId() == BOT_UTIL_DEFUSE_BOMB )
@@ -2611,7 +2613,7 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 
 			iBombType = DOD_BOMB_DEFUSE;
 		}
-		break;
+		[[fallthrough]];
 		
 	case BOT_UTIL_PLANT_BOMB:
 		{
@@ -2719,7 +2721,7 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 			
 			if (!CClassInterface::getVelocity(m_pLastEnemy, &vVelocity))
 			{
-				//if (pClient != nullptr)
+				if (pClient != nullptr)
 					vVelocity = pClient->getVelocity();
 			}
 
@@ -2739,24 +2741,28 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 		{
 		// find hide waypoint
 
-		if ( CWaypoint *pWaypoint = CWaypoints::getWaypoint(CWaypointLocations::GetCoverWaypoint(getOrigin(),m_vLastSeeEnemy, nullptr)) )
+			CBotWeapon *pWeapon = util->getWeaponChoice();
+
+			if ( pWeapon == nullptr || pWeapon->getWeaponInfo() == nullptr )
+				return false;
+
+			CBotSchedule *pSched = new CBotSchedule();
+
+			pSched->addTask(new CThrowGrenadeTask(pWeapon, getAmmo(static_cast<std::size_t>(pWeapon->getWeaponInfo()->getAmmoIndex1())), m_vLastSeeEnemyBlastWaypoint)); // first - throw
+
+			// 2nd -- hide, if there is somewhere to hide. Previously no cover waypoint
+			// meant no throw at all, while still reporting success
+			if ( CWaypoint *pWaypoint = CWaypoints::getWaypoint(CWaypointLocations::GetCoverWaypoint(getOrigin(),m_vLastSeeEnemy, nullptr)) )
 			{
-				CBotWeapon *pWeapon = util->getWeaponChoice();
-				CBotSchedule *pSched = new CBotSchedule();
 				CFindPathTask *pathtask = new CFindPathTask(pWaypoint->getOrigin());
-
-				pSched->addTask(new CThrowGrenadeTask(pWeapon, getAmmo(static_cast<std::size_t>(pWeapon->getWeaponInfo()->getAmmoIndex1())), m_vLastSeeEnemyBlastWaypoint)); // first - throw
-				pSched->addTask(pathtask); // 2nd -- hide
-
 				pathtask->setNoInterruptions();
-
-				m_pSchedules->add(pSched);
-
-				removeCondition(CONDITION_COVERT);
-				removeCondition(CONDITION_GREN);
-
-				return true;
+				pSched->addTask(pathtask);
 			}
+
+			m_pSchedules->add(pSched);
+
+			removeCondition(CONDITION_COVERT);
+			removeCondition(CONDITION_GREN);
 
 			return true;
 		}
@@ -3194,6 +3200,11 @@ void CDODBot :: getTasks (unsigned iIgnore)
 
 		bCanMessAround = false;
 
+		// these were only filled in by the bomb map block below, so on plain flag
+		// maps the "last flag / last owned flag" weighting read stale statics
+		iFlagsOwned = CDODMod::m_Flags.getNumFlagsOwned(m_iTeam);
+		iNumFlags = CDODMod::m_Flags.getNumFlags();
+
 		if ( inSquad() )
 		{
 			//caxanga334: SDK 2013 doesn't like to create a Vector from an int
@@ -3297,11 +3308,19 @@ void CDODBot :: getTasks (unsigned iIgnore)
 
 		if (CDODMod::isFlagMap() && (iNumBombsToPlant > 0))
 			fPlantUtil = 0.3f + (((static_cast<float>(iFlagsOwned) / static_cast<float>(iNumBombsToPlant)) * 0.6f) / static_cast<float>(iNumFlags));
-		else
+		else if (iNumBombsOnMap > 0)
 			fPlantUtil = 0.4f + ((static_cast<float>(iNumBombsToPlant) / static_cast<float>(iNumBombsOnMap)) * 0.4f);
+		else
+			fPlantUtil = 0.4f; // nothing for my team to plant (e.g. pure defence side)
 
 		fDefuseBombUtil = fDefendUtil * 2;
-		fDefendBombUtil = 0.8f - ((static_cast<float>(iNumBombsToDefend) / static_cast<float>(iNumBombsOnMap)) * 0.8f);
+
+		// a team with no bomb targets of its own used to divide by zero here and feed
+		// NaN into the utility ranking
+		if (iNumBombsOnMap > 0)
+			fDefendBombUtil = 0.8f - ((static_cast<float>(iNumBombsToDefend) / static_cast<float>(iNumBombsOnMap)) * 0.8f);
+		else
+			fDefendBombUtil = 0.4f;
 
 		
 		fPlantUtil += randomFloat(-0.25f,0.25f); // add some fuzz
@@ -3332,7 +3351,10 @@ void CDODBot :: getTasks (unsigned iIgnore)
 
 		if ( iNumEnemyBombsOnMap > 0 )
 		{
-			ADD_UTILITY(BOT_UTIL_DEFEND_POINT, ((iFlagsOwned > 0) && (m_pNearestFlag == nullptr)) || CDODMod::m_Flags.ownsFlag(iFlagID, m_iTeam), fDefendUtil)
+			// iFlagID is always -1 at this point, so check the flag we can actually see
+			const int iNearestFlagID = m_pNearestFlag ? CDODMod::m_Flags.getFlagID(m_pNearestFlag) : -1;
+
+			ADD_UTILITY(BOT_UTIL_DEFEND_POINT, ((iFlagsOwned > 0) && (m_pNearestFlag == nullptr)) || ((iNearestFlagID != -1) && CDODMod::m_Flags.ownsFlag(iNearestFlagID, m_iTeam)), fDefendUtil)
 
 			/*if ( m_pNearestFlag )
 			{
@@ -3673,7 +3695,9 @@ bool CDODBot :: isVisibleThroughSmoke ( edict_t *pSmoke, edict_t *pCheck )
 					static Vector vCheckComp;
 					// check if enemy is behind the smoke from my perspective
 					vCheckComp = CBotGlobals::entityOrigin(pCheck) - getOrigin();
-					vCheckComp = (vCheckComp / vCheckComp.Length())*fSmokeDist;
+					const float fLen = vCheckComp.Length();
+					if ( fLen > 1.0f )
+						vCheckComp = (vCheckComp / fLen)*fSmokeDist;
 
 					fDist = (vSmoke - (getOrigin() + vCheckComp)).Length();
 				}
@@ -3695,10 +3719,11 @@ bool CDODBot :: isVisibleThroughSmoke ( edict_t *pSmoke, edict_t *pCheck )
 					CClients::clientDebugMsg(this,BOT_DEBUG_THINK,"Smoke Test (%s to %s) = %s",m_szBotName,engine->GetPlayerNetworkIDString(pCheck),smokeinfo->bVisible ? "visible" : "invisible");
 			#endif
 
+			// check again soon (typical reaction time delay). This used to be set on
+			// every call, so a bot asking each frame pushed the deadline forward forever
+			// and kept its first verdict for as long as the smoke existed
+			smokeinfo->fLastTime = engine->Time() + randomFloat(0.15f,0.3f);
 		}
-
-		// check again soon (typical reaction time delay)
-		smokeinfo->fLastTime = engine->Time() + randomFloat(0.15f,0.3f);
 
 		return smokeinfo->bVisible;
 
