@@ -120,10 +120,17 @@ bool CDODMod :: shouldAttack (const int iTeam)
 
 	iNumFlags = m_Flags.getNumFlags();
 
-	iFlags_0 = m_Flags.getNumFlagsOwned(iTeam == TEAM_ALLIES ? TEAM_AXIS : TEAM_ALLIES) /
-		(iNumFlags * MAX_DOD_FLAGS);
+	if ( iNumFlags <= 0 )
+		return randomFloat(0.0f,1.0f) < 0.5f;
 
-	iFlags_1 = m_Flags.getNumFlagsOwned(iTeam) / (iNumFlags * MAX_DOD_FLAGS);
+	// the lookup table is indexed by (flags owned / total flags) * MAX_DOD_FLAGS.
+	// This used to divide by (total * MAX) in integer maths, which is always 0,
+	// so every decision used the [0][0] entry regardless of the score
+	iFlags_0 = (m_Flags.getNumFlagsOwned(iTeam == TEAM_ALLIES ? TEAM_AXIS : TEAM_ALLIES) * MAX_DOD_FLAGS) / iNumFlags;
+	iFlags_1 = (m_Flags.getNumFlagsOwned(iTeam) * MAX_DOD_FLAGS) / iNumFlags;
+
+	iFlags_0 = std::clamp(iFlags_0, 0, static_cast<int>(MAX_DOD_FLAGS));
+	iFlags_1 = std::clamp(iFlags_1, 0, static_cast<int>(MAX_DOD_FLAGS));
 
 	return randomFloat(0.0f,1.0f) < fAttackProbLookUp[iFlags_0][iFlags_1];//gNetAttackOrDefend->getOutput();
 }
@@ -252,10 +259,10 @@ bool CDODFlags::isTeamMateDefusing (const edict_t *pIgnore, const int iTeam, con
 		if ( !CBotGlobals::entityIsValid(pPlayer) )
 			continue;
 
-		IPlayerInfo* pPlayerinfo = playerinfomanager->GetPlayerInfo(pPlayer);
-		const CBotCmd cmd = pPlayerinfo->GetLastUserCommand();
-
-		if ( CClassInterface::isPlayerDefusingBomb_DOD(pPlayer) || cmd.buttons & IN_USE )
+		// only count players the game says are actually defusing. Counting anyone
+		// holding +use meant two bots arriving together each saw the other and
+		// both gave up, leaving the bomb to go off
+		if ( CClassInterface::isPlayerDefusingBomb_DOD(pPlayer) )
 		{
 			if ( CClassInterface::getTeam(pPlayer) != iTeam )
 				continue;
@@ -299,7 +306,7 @@ bool CDODFlags::isTeamMatePlanting (const edict_t *pIgnore, const int iTeam, con
 
 bool CDODFlags::isTeamMatePlanting (const edict_t *pIgnore, const int iTeam, const int id) const
 {
-	if ( m_pBombs[id][0] )
+	if ( isValidID(id) && m_pBombs[id][0] )
 		return isTeamMatePlanting(pIgnore,iTeam,CBotGlobals::entityOrigin(m_pBombs[id][0]));
 
 	return false;
@@ -383,14 +390,15 @@ bool CDODFlags::getRandomEnemyControlledFlag (const CBot *pBot, Vector *position
 				fTotal += (MAX_BELIEF + 1.0f - pNav->getBelief(m_iWaypoint[i])) / MAX_BELIEF * static_cast<float>(m_iNumAllies[i] + 1);
 			else
 				fTotal += (MAX_BELIEF + 1.0f - pNav->getBelief(m_iWaypoint[i])) / MAX_BELIEF * static_cast<float>(m_iNumAxis[i] + 1);
-		}
 
-		if ( fRand <= fTotal )
-		{
-			if ( id )
-				*id = i;
-			*position = m_vCPPositions[i];
-			return true;
+			// only a point that passed the checks above may be picked
+			if ( fRand <= fTotal )
+			{
+				if ( id )
+					*id = i;
+				*position = m_vCPPositions[i];
+				return true;
+			}
 		}
 	}
 
@@ -513,16 +521,20 @@ bool CDODFlags::getRandomBombToPlant(CBot* pBot, Vector& position, const int iTe
 			continue;
 		}
 
+		edict_t* target = nullptr;
+
+		if (CClassInterface::getDODBombState(m_pBombs[i][0]) == DOD_BOMB_STATE_AVAILABLE)
+			target = m_pBombs[i][0];
+		else if (m_pBombs[i][1] != nullptr && CClassInterface::getDODBombState(m_pBombs[i][1]) == DOD_BOMB_STATE_AVAILABLE)
+			target = m_pBombs[i][1];
+
+		if (target == nullptr)
+			continue; // both targets already armed or blown
+
 		const float belief = pNav->getBelief(m_iWaypoint[i]);
 		const float weight = (MAX_BELIEF + 1.0f - belief) / MAX_BELIEF * static_cast<float>(getNumBombsRemaining(i));
 
 		totalWeight += weight;
-		edict_t* target = m_pBombs[i][0];
-
-		if (m_pBombs[i][1] != nullptr && CClassInterface::getDODBombState(m_pBombs[i][1]) == DOD_BOMB_STATE_AVAILABLE)
-		{
-			target = m_pBombs[i][1];
-		}
 
 		candidates.push_back({ target, weight, i }); //TODO: maybe use emplace_back? [APG]RoboCop[CL]
 	}
@@ -594,14 +606,14 @@ bool CDODFlags::getRandomTeamControlledFlag (const CBot *pBot, Vector *position,
 				fTotal += (pNav->getBelief(m_iWaypoint[i])+MAX_BELIEF)/(MAX_BELIEF*2) * static_cast<float>(m_iNumAllies[i] + 1);
 			else
 				fTotal += (pNav->getBelief(m_iWaypoint[i])+MAX_BELIEF)/(MAX_BELIEF*2) * static_cast<float>(m_iNumAxis[i] + 1);
-		}
 
-		if ( fRand <= fTotal )
-		{
-			if ( id )
-				*id = i;
-			*position = m_vCPPositions[i];
-			return true;
+			if ( fRand <= fTotal )
+			{
+				if ( id )
+					*id = i;
+				*position = m_vCPPositions[i];
+				return true;
+			}
 		}
 	}
 
@@ -742,24 +754,41 @@ int CDODFlags::setup(edict_t *pResourceEntity)
 	m_iNumAxisBombsOnMap = getNumPlantableBombs(TEAM_AXIS);
 	m_iNumAlliesBombsOnMap = getNumPlantableBombs(TEAM_ALLIES);
 
-	// sometimes m_iNumControlPoints is larger than it  should be. check the number of flags and bombs we found on the map
+	// sometimes m_iNumControlPoints is larger than it should be. Trim only the
+	// unused entries at the end: every array here is indexed by the game's own
+	// control point index (events use it too), so a gap in the middle must stay
+	// a gap. Setting the count to the number of flags found used to drop the
+	// highest numbered points whenever an earlier one had no flag entity.
+	int iLastUsed = -1;
+	int iNumPlainFlags = 0;
+
 	for ( int i = 0; i < m_iNumControlPoints; i ++ )
 	{
-		if ( m_pFlags[i] != nullptr)
-			iNumFlags++;
-		if ( m_pBombs[i][0] != nullptr)
-			iNumBombCaps++;
-		if ( m_pBombs[i][1] != nullptr)
-			iNumBombCaps++;
+		if ( m_pFlags[i] == nullptr )
+			continue;
+
+		iLastUsed = i;
+		iNumFlags++;
+
+		if ( m_pBombs[i][0] != nullptr )
+			iNumBombCaps++; // count bomb *points*, not bomb targets
+		else if ( m_iAlliesReqCappers[i] || m_iAxisReqCappers[i] )
+			iNumPlainFlags++;
 	}
 
-	// update new number
-	m_iNumControlPoints = iNumFlags;
+	m_iNumControlPoints = iLastUsed + 1;
 
-	if ( iNumBombCaps >= iNumFlags )
-		return DOD_MAPTYPE_BOMB;
+	if ( iNumFlags == 0 )
+		return DOD_MAPTYPE_UNKNOWN;
 
-	return DOD_MAPTYPE_FLAG;
+	int iMapType = 0;
+
+	if ( iNumBombCaps > 0 )
+		iMapType |= DOD_MAPTYPE_BOMB;
+	if ( iNumPlainFlags > 0 || iNumBombCaps == 0 )
+		iMapType |= DOD_MAPTYPE_FLAG; // mixed maps get both behaviours
+
+	return iMapType;
 }
 
 int CDODMod ::getScore(edict_t *pPlayer)

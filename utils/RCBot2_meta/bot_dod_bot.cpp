@@ -1970,56 +1970,104 @@ void CDODBot::hearVoiceCommand(edict_t* pPlayer, byte voiceCmd)
 
 		break;
 	case DOD_VC_NEED_BACKUP:
-		if ( (!inSquad() ||( m_pSquad->GetLeader()==m_pEdict)) && m_pNearestFlag && isVisible(pPlayer) && !rcbot_nocapturing.GetBool() )
 		{
-			Vector vPoint = CBotGlobals::entityOrigin(m_pNearestFlag);
-			Vector vPlayer = CBotGlobals::entityOrigin(pPlayer);
+			// squad members follow their leader instead
+			if ( rcbot_nocapturing.GetBool() || (inSquad() && (m_pSquad->GetLeader() != m_pEdict)) )
+				break;
 
-			if ( (vPoint - vPlayer).Length() < 250 )
+			// work out which objective the caller is standing on. This used to rely on
+			// my own nearest *visible* flag, so only bots that could already see both
+			// the caller and the flag ever answered, and a lone capper on a flag that
+			// needs two players (usually the middle one) was left waiting
+			const Vector vPlayer = CBotGlobals::entityOrigin(pPlayer);
+			const int iFlagID = CDODMod::m_Flags.findNearestObjective(vPlayer);
+			edict_t *pFlag = CDODMod::m_Flags.getFlagByID(iFlagID);
+
+			if ( pFlag == nullptr )
+				break;
+
+			const Vector vPoint = CBotGlobals::entityOrigin(pFlag);
+
+			if ( (vPoint - vPlayer).Length() >= 250.0f )
+				break; // caller isn't at the objective
+
+			const bool bCanSeeCaller = isVisible(pPlayer);
+
+			if ( CDODMod::m_Flags.getNumBombsRequired(iFlagID) > 0 )
 			{
+				// bomb point: cover the planter from a nearby defend spot
+				if ( !bCanSeeCaller )
+					break;
+
+				CWaypoint* pWpt = CWaypoints::getWaypoint(CWaypointLocations::NearestBlastWaypoint(vPoint, vPlayer, 1000.0f, -1, true, false, true, false, m_iTeam, true));
+
+				if ( pWpt == nullptr )
+					break;
+
+				CBotSchedule *defend = new CBotSchedule();
+
+				updateCondition(CONDITION_RUN);
+
+				defend->setID(SCHED_DEFENDPOINT);
+				defend->addTask(new CFindPathTask(pWpt->getOrigin()));
+				defend->addTask(new CBotDefendTask(pWpt->getOrigin(), randomFloat(6.0f, 12.0f), 0, true, vPoint, LOOK_SNIPE, pWpt->getFlags()));
+				if (!inSquad() && rcbot_bots_form_squads.GetBool())
+					defend->addTask(new CBotJoinSquad(pPlayer));
+
+				m_pSchedules->freeMemory();
+				m_pSchedules->add(defend);
+			}
+			else
+			{
+				// capture point: only worth going if it still needs more of us on it
+				if ( CDODMod::m_Flags.ownsFlag(iFlagID, m_iTeam) )
+					break;
+
+				const int iStillNeeded = CDODMod::m_Flags.numCappersRequired(iFlagID, m_iTeam) -
+				                         CDODMod::m_Flags.numFriendliesAtCap(iFlagID, m_iTeam);
+
+				if ( iStillNeeded <= 0 )
+					break;
+
+				// already on my way there
+				if ( m_pSchedules->isCurrentSchedule(SCHED_ATTACKPOINT) && (distanceFrom(vPoint) < 250.0f) )
+					break;
+
+				if ( !bCanSeeCaller )
+				{
+					// out of sight: only bots close by and not in a fight, and not all
+					// of them, so the rest of the team keeps its own jobs
+					if ( hasEnemy() || (distanceFrom(vPlayer) > 1500.0f) || (randomFloat(0.0f,1.0f) > 0.6f) )
+						break;
+				}
+
+				const int iGoalWaypoint = CDODMod::m_Flags.getWaypointAtFlag(iFlagID);
+
 				CBotSchedule *attack = new CBotSchedule();
 
 				updateCondition(CONDITION_RUN);
 
-				if ( CDODMod::isBombMap() )
-				{
-					CWaypoint* pWpt = CWaypoints::getWaypoint(CWaypointLocations::NearestBlastWaypoint(vPoint, vPlayer, 1000.0f, -1, true, false, true, false, m_iTeam, true));
-					
-					if ( pWpt != nullptr )
-					{
-						attack->setID(SCHED_DEFENDPOINT);
-						attack->addTask(new CFindPathTask(pWpt->getOrigin()));
-						attack->addTask(new CBotDefendTask(pWpt->getOrigin(), randomFloat(6.0f, 12.0f), 0, true, vPoint, LOOK_SNIPE, pWpt->getFlags()));
-						if (!inSquad() && rcbot_bots_form_squads.GetBool())
-							attack->addTask(new CBotJoinSquad(pPlayer));
+				attack->setID(SCHED_ATTACKPOINT);
 
-						// add defend task
-						m_pSchedules->freeMemory();
-						m_pSchedules->add(attack);
-					}
-					else
-					{
-						delete attack; // Clean up the allocated memory
-					}
-				}
+				if ( iGoalWaypoint != -1 )
+					attack->addTask(new CFindPathTask(iGoalWaypoint));
 				else
-				{
-					attack->setID(SCHED_ATTACKPOINT);
 					attack->addTask(new CFindPathTask(vPoint));
-					attack->addTask(new CBotDODAttackPoint(CDODMod::m_Flags.getFlagID(m_pNearestFlag),vPoint,150.0f));
 
-					if ( !inSquad() && rcbot_bots_form_squads.GetBool() )
-						attack->addTask(new CBotJoinSquad(pPlayer));
+				attack->addTask(new CBotDODAttackPoint(iFlagID,vPoint,150.0f));
 
-					// add defend task
-					m_pSchedules->freeMemory();
-					m_pSchedules->add(attack);
+				if ( !inSquad() && rcbot_bots_form_squads.GetBool() && bCanSeeCaller )
+					attack->addTask(new CBotJoinSquad(pPlayer));
 
-				}
+				m_pSchedules->freeMemory();
+				m_pSchedules->add(attack);
 
-				if ( randomFloat(0.0f,1.0f) > 0.75f )
-					addVoiceCommand(DOD_VC_YES);
+				// stick with this rather than re-planning straight away
+				m_CurrentUtil = BOT_UTIL_ATTACK_NEAREST_POINT;
 			}
+
+			if ( randomFloat(0.0f,1.0f) > 0.5f )
+				addVoiceCommand(DOD_VC_YES);
 		}
 		break;
 	default:
@@ -3213,13 +3261,15 @@ void CDODBot :: getTasks (unsigned iIgnore)
 		{
 			//caxanga334: SDK 2013 doesn't like to create a Vector from an int
 			//#if SOURCE_ENGINE == SE_SDK2013 || SOURCE_ENGINE == SE_BMS || SOURCE_ENGINE == SE_TF2
-			iFlagID = CDODMod::m_Flags.findNearestObjective(Vector(static_cast<vec_t>(m_pSquad->GetFormationPosition(m_pEdict))));
-			//#else
-			//iFlagID = CDODMod::m_Flags.findNearestObjective(Vector(static_cast<vec_t>(m_pSquad->GetFormationPosition(m_pEdict))));
-			//#endif
-			m_pNearestFlag = CDODMod::m_Flags.getFlagByID(iFlagID);
+			// GetFormationPosition() is the member's slot number, not a place; turning
+			// it into Vector(n,n,n) found no objective and cleared m_pNearestFlag for
+			// every squad member on every think
+			iFlagID = CDODMod::m_Flags.findNearestObjective(m_pSquad->GetFormationVector(m_pEdict));
 
-			if ( hasSomeConditions(CONDITION_DEFENSIVE) )
+			if ( iFlagID != -1 )
+				m_pNearestFlag = CDODMod::m_Flags.getFlagByID(iFlagID);
+
+			if ( (iFlagID != -1) && hasSomeConditions(CONDITION_DEFENSIVE) )
 			{
 				if ( CWaypoint *pWaypoint = CWaypoints::getWaypoint(CDODMod::m_Flags.getWaypointAtFlag(iFlagID)) )
 				{

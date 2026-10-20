@@ -941,6 +941,7 @@ private:
 	Vector m_vMoveTo;
 	float m_fAttackTime;
 	float m_fTime;
+	float m_fNextBackupCall; // limits "need backup" calls while waiting on a multi-capper flag
 	int m_iFlagID;
 	float m_fRadius;
 	bool m_bProne;

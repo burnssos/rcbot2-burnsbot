@@ -281,8 +281,19 @@ public:
 
 	int findNearestObjective (const Vector& vOrigin) const;
 
+	// true if iId indexes a known control point. Path bombs (dod_bomb_target
+	// away from any flag) report -1, which used to be fed straight into the
+	// per-point arrays below
+	bool isValidID (const int iId) const
+	{
+		return (iId >= 0) && (iId < m_iNumControlPoints) && (iId < MAX_DOD_FLAGS);
+	}
+
 	int getWaypointAtFlag (const int iFlagId) const
 	{
+		if ( !isValidID(iFlagId) )
+			return -1;
+
 		return m_iWaypoint[iFlagId];
 	}
 
@@ -327,6 +338,9 @@ public:
 
 	bool isBombExplodeImminent(const int id) const
 	{
+		if ( !isValidID(id) )
+			return false;
+
 		return engine->Time() - m_fBombPlantedTime[id] > DOD_BOMB_EXPLODE_IMMINENT_TIME;
 	}
 
@@ -380,7 +394,7 @@ public:
 
 	int numCappersRequired (const int iFlag, const int iTeam) const
 	{
-		if ( iFlag == -1 )
+		if ( !isValidID(iFlag) )
 			return 0;
 
 		return iTeam == TEAM_ALLIES ? m_iAlliesReqCappers[iFlag] : m_iAxisReqCappers[iFlag];
@@ -388,7 +402,7 @@ public:
 
 	bool isBombPlanted (const int iId) const
 	{
-		if ( iId == -1 )
+		if ( !isValidID(iId) )
 			return false;
 
 		return m_bBombPlanted[iId];
@@ -401,17 +415,17 @@ public:
 
 	bool canDefendBomb (const int iTeam, const int iId) const
 	{
-		return m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]!=iTeam && isBombPlanted(iId);
+		return isValidID(iId) && m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]!=iTeam && isBombPlanted(iId);
 	}
 
 	bool canDefuseBomb (const int iTeam, const int iId) const
 	{
-		return m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]==iTeam && isBombPlanted(iId);
+		return isValidID(iId) && m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]==iTeam && isBombPlanted(iId);
 	}
 
 	bool canPlantBomb (const int iTeam, const int iId) const
 	{
-		return m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]!=iTeam && !isBombPlanted(iId);
+		return isValidID(iId) && m_pBombs[iId][0]!= nullptr &&m_iOwner[iId]!=iTeam && !isBombPlanted(iId);
 	}
 
 	bool isTeamMateDefusing (const edict_t *pIgnore, int iTeam, int id ) const;
@@ -422,7 +436,7 @@ public:
 
 	int getNumBombsRequired (const int iId) const
 	{
-		if ( iId == -1 )
+		if ( !isValidID(iId) )
 			return 0;
 
 		return m_iBombsRequired[iId];
@@ -435,7 +449,7 @@ public:
 
 	int getNumBombsRemaining (const int iId) const
 	{
-		if ( iId == -1 )
+		if ( !isValidID(iId) )
 			return 0;
 
 		return m_iBombsRemaining[iId];
@@ -448,7 +462,7 @@ public:
 
 	bool isBombBeingDefused (const int iId) const
 	{
-		if ( iId == -1 )
+		if ( !isValidID(iId) )
 			return false;
 
 		return m_bBombBeingDefused[iId];
@@ -465,7 +479,7 @@ public:
 
 	int numFriendliesAtCap (const int iFlag, const int iTeam) const
 	{
-		if ( iFlag == -1 )
+		if ( !isValidID(iFlag) )
 			return 0;
 
 		return iTeam == TEAM_ALLIES ? m_iNumAllies[iFlag] : m_iNumAxis[iFlag];

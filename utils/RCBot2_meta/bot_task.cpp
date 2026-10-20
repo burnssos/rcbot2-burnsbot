@@ -444,20 +444,32 @@ void CBotDODBomb :: execute (CBot *pBot,CBotSchedule *pSchedule)
 		m_fTime = engine->Time() + randomFloat(8.0f,12.0f);
 		static_cast<CDODBot*>(pBot)->setNearestBomb(m_pBombTarget);
 
+		// path bombs aren't attached to a control point (id -1), so check by position
+		const bool bPathBomb = (m_iType == DOD_BOMB_PATH_PLANT) || (m_iType == DOD_BOMB_PATH_DEFUSE);
+		const Vector vBomb = (m_pBombTarget != nullptr && CBotGlobals::entityIsValid(m_pBombTarget)) ? CBotGlobals::entityOrigin(m_pBombTarget) : m_vOrigin;
+		bool bTeamMateBusy;
+
 		if ( m_iType == DOD_BOMB_PLANT || m_iType == DOD_BOMB_PATH_PLANT )
 		{
-			 if ( CDODMod::m_Flags.isTeamMatePlanting(pBot->getEdict(),pBot->getTeam(),m_iBombID) )
-				 fail();
+			bTeamMateBusy = bPathBomb ? CDODFlags::isTeamMatePlanting(pBot->getEdict(),pBot->getTeam(),vBomb)
+			                          : CDODMod::m_Flags.isTeamMatePlanting(pBot->getEdict(),pBot->getTeam(),m_iBombID);
 		}
 		else
 		{
-			 if ( CDODMod::m_Flags.isTeamMateDefusing(pBot->getEdict(),pBot->getTeam(),m_iBombID) )
-				 fail();
+			bTeamMateBusy = bPathBomb ? CDODFlags::isTeamMateDefusing(pBot->getEdict(),pBot->getTeam(),vBomb)
+			                          : CDODMod::m_Flags.isTeamMateDefusing(pBot->getEdict(),pBot->getTeam(),m_iBombID);
+		}
+
+		if ( bTeamMateBusy )
+		{
+			fail();
+			return; // later checks could otherwise turn this into complete()
 		}
 	}
 	else if ( m_fTime < engine->Time() )
 	{
 		fail();
+		return;
 	}
 
 	if ( m_iType == DOD_BOMB_PLANT ) 
@@ -639,6 +651,7 @@ CBotDODAttackPoint :: CBotDODAttackPoint (const int iFlagID, const Vector& vOrig
 	m_bProne = false;
 	m_fAttackTime = 0.0f;
 	m_fTime = 0.0f;
+	m_fNextBackupCall = 0.0f;
 	m_iFlagID = iFlagID;
 	m_fRadius = fRadius;
 }
@@ -686,12 +699,15 @@ void CBotDODAttackPoint :: execute (CBot *pBot,CBotSchedule *pSchedule)
 			m_vMoveTo = m_vOrigin + Vector(randomFloat(-m_fRadius,m_fRadius),randomFloat(-m_fRadius,m_fRadius),0);
 			m_bProne = randomFloat(0,1) * (1.0f-pBot->getHealthPercent()) > 0.75f;
 
-			if (  CDODMod::m_Flags.numFriendliesAtCap(m_iFlagID,iTeam) < CDODMod::m_Flags.numCappersRequired(m_iFlagID,iTeam) )
+			// e.g. the middle flag usually needs two players: call for help, but not
+			// every couple of seconds
+			if ( (CDODMod::m_Flags.numFriendliesAtCap(m_iFlagID,iTeam) < CDODMod::m_Flags.numCappersRequired(m_iFlagID,iTeam)) &&
+				 (m_fNextBackupCall < engine->Time()) )
 			{
-				// count players I see
 				CDODBot *pDODBot = static_cast<CDODBot*>(pBot);
 
 				pDODBot->addVoiceCommand(DOD_VC_NEED_BACKUP);
+				m_fNextBackupCall = engine->Time() + randomFloat(7.0f,10.0f);
 			}
 		}
 		else if ( m_fTime < engine->Time() )
@@ -4455,6 +4471,15 @@ void CDODDropAmmoTask :: execute (CBot *pBot, CBotSchedule *pSchedule)
 		return;
 	}
 
+	// don't chase a team mate around forever
+	if ( m_fTime <= 0.0f )
+		m_fTime = engine->Time() + 10.0f;
+	else if ( m_fTime < engine->Time() )
+	{
+		fail();
+		return;
+	}
+
 	pBot->setLookAtTask(LOOK_VECTOR);
 	pBot->setLookVector(vOrigin);
 	pBot->setMoveTo(vOrigin);
@@ -5640,10 +5665,13 @@ void CBotDODSnipe :: execute (CBot *pBot,CBotSchedule *pSchedule)
 			}
 		}
 
-		// no enemy for a while
-		if (m_fEnemyTime + m_fTime < engine->Time())
+		// held the spot for the planned time and nothing has shown up for a while:
+		// pack up and go back to the objectives. m_fTime is an absolute time, so
+		// the old test (m_fEnemyTime + m_fTime < now) could never pass and bots
+		// camped until they ran out of ammo
+		if ( (m_fTime < engine->Time()) && (m_fEnemyTime + 10.0f < engine->Time()) )
 		{
-			pBot->secondaryAttack();
+			pBot->secondaryAttack(); // undeploy / unzoom (only reached when deployed or zoomed)
 			complete();
 		}
 	}
@@ -6095,7 +6123,7 @@ CBotTask :: CBotTask ()
 
 bool CBotTask :: timedOut () const
 {
-	return this->m_fTimeOut > 0.0f && engine->Time() < this->m_fTimeOut;
+	return this->m_fTimeOut > 0.0f && engine->Time() > this->m_fTimeOut;
 }
 
 eTaskState CBotTask :: isInterrupted (CBot *pBot)
