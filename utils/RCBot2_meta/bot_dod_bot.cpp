@@ -352,7 +352,11 @@ bool CDODBot :: startGame ()
 		return false;
 	}
 
-	if ( (m_iDesiredClass < 0) || (m_iDesiredClass >= DOD_CLASS_MAX) )
+	// pick up rcbot_force_class changes made while bots are already playing
+	const int iForcedClass = rcbot_force_class.GetInt();
+
+	if ( (m_iDesiredClass < 0) || (m_iDesiredClass >= DOD_CLASS_MAX) ||
+		 ((iForcedClass >= 1) && (iForcedClass <= DOD_CLASS_MAX) && (m_iDesiredClass != iForcedClass - 1)) )
 		chooseClass(false);
 
 	if (CClassInterface::getPlayerClassDOD(m_pEdict) < 0)
