@@ -256,14 +256,27 @@ public:
 		}
 	}
 
-	int getNumFlags () const { return m_iNumControlPoints; }
+	// only points that have a flag entity: unused slots between real points are
+	// kept so ids match the game, but must not count as flags
+	int getNumFlags () const
+	{
+		int count = 0;
+
+		for (int i = 0; i < m_iNumControlPoints; i++)
+		{
+			if ( m_pFlags[i] != nullptr )
+				count++;
+		}
+
+		return count;
+	}
 	int getNumFlagsOwned (const int iTeam) const
 	{
 		int count = 0;
 
 		for (int i = 0; i < m_iNumControlPoints; i++)
 		{
-			if ( m_iOwner[i] == iTeam )
+			if ( (m_pFlags[i] != nullptr) && (m_iOwner[i] == iTeam) )
 				count++;
 		}
 
@@ -412,6 +425,9 @@ public:
 	{
 		return isBombPlanted(getBombID(pBomb));
 	}
+
+	// the armed (planted) target at a point, or nullptr
+	edict_t *getActiveBombTarget (const int iId) const;
 
 	bool canDefendBomb (const int iTeam, const int iId) const
 	{

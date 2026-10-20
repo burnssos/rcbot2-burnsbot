@@ -239,10 +239,31 @@ int CDODMod::getHighestScore ()
 	return highest;
 }
 
+edict_t *CDODFlags::getActiveBombTarget (const int iId) const
+{
+	if ( !isValidID(iId) )
+		return nullptr;
+
+	for ( edict_t *pTarget : m_pBombs[iId] )
+	{
+		if ( pTarget != nullptr && CClassInterface::getDODBombState(pTarget) == DOD_BOMB_STATE_ACTIVE )
+			return pTarget;
+	}
+
+	return nullptr;
+}
+
 bool CDODFlags::isTeamMateDefusing (const edict_t *pIgnore, const int iTeam, const int id) const
 {
-	if ( m_pBombs[id][0] != nullptr)
-		return isTeamMateDefusing(pIgnore,iTeam,CBotGlobals::entityOrigin(m_pBombs[id][0]));
+	if ( !isValidID(id) )
+		return false;
+
+	// a point can have two targets; check around whichever is armed
+	for ( edict_t *pTarget : m_pBombs[id] )
+	{
+		if ( pTarget != nullptr && isTeamMateDefusing(pIgnore,iTeam,CBotGlobals::entityOrigin(pTarget)) )
+			return true;
+	}
 
 	return false;
 }
@@ -320,7 +341,7 @@ int CDODFlags::findNearestObjective(const Vector& vOrigin) const
 
 	for (int i = 0; i < m_iNumControlPoints; i++)
 	{
-		if ( m_iWaypoint[i] != -1 )
+		if ( (m_pFlags[i] != nullptr) && (m_iWaypoint[i] != -1) ) // skip unused point slots
 		{
 			CWaypoint* waypoint = CWaypoints::getWaypoint(m_iWaypoint[i]);
 

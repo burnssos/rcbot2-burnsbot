@@ -134,6 +134,7 @@ void CDODBot :: init (const bool bVarInit)
 	m_iSelectedClass = -1;
 	m_bCheckClass = false;
 	m_pWantToProne = nullptr;
+	m_fIdleReloadFor = 0.0f;
 }
 
 void CDODBot :: setup ()
@@ -1971,8 +1972,10 @@ void CDODBot::hearVoiceCommand(edict_t* pPlayer, byte voiceCmd)
 		break;
 	case DOD_VC_NEED_BACKUP:
 		{
-			// squad members follow their leader instead
-			if ( rcbot_nocapturing.GetBool() || (inSquad() && (m_pSquad->GetLeader() != m_pEdict)) )
+			// squad members follow their leader instead; and don't drop a fight or
+			// re-plan a capture/bomb run already under way
+			if ( rcbot_nocapturing.GetBool() || (inSquad() && (m_pSquad->GetLeader() != m_pEdict)) || hasEnemy() ||
+				 m_pSchedules->isCurrentSchedule(SCHED_ATTACKPOINT) || m_pSchedules->hasSchedule(SCHED_BOMB) )
 				break;
 
 			// work out which objective the caller is standing on. This used to rely on
@@ -2029,17 +2032,15 @@ void CDODBot::hearVoiceCommand(edict_t* pPlayer, byte voiceCmd)
 				if ( iStillNeeded <= 0 )
 					break;
 
-				// already on my way there
-				if ( m_pSchedules->isCurrentSchedule(SCHED_ATTACKPOINT) && (distanceFrom(vPoint) < 250.0f) )
+				// several bots hear each call: the more are needed, the more likely each
+				// one is to go, so a two-capper flag doesn't empty the rest of the map
+				const float fGoChance = std::min(1.0f, 0.35f * static_cast<float>(iStillNeeded));
+
+				if ( !bCanSeeCaller && (distanceFrom(vPlayer) > 1500.0f) )
 					break;
 
-				if ( !bCanSeeCaller )
-				{
-					// out of sight: only bots close by and not in a fight, and not all
-					// of them, so the rest of the team keeps its own jobs
-					if ( hasEnemy() || (distanceFrom(vPlayer) > 1500.0f) || (randomFloat(0.0f,1.0f) > 0.6f) )
-						break;
-				}
+				if ( randomFloat(0.0f,1.0f) > (bCanSeeCaller ? std::min(1.0f, fGoChance * 2.0f) : fGoChance) )
+					break;
 
 				const int iGoalWaypoint = CDODMod::m_Flags.getWaypointAtFlag(iFlagID);
 
@@ -2648,7 +2649,23 @@ bool CDODBot :: executeAction ( CBotUtility *util )
 		pBombTarget = m_pNearestBomb;
 
 		if ( util->getId() == BOT_UTIL_PLANT_NEAREST_BOMB )
+		{
+			if ( !m_bHasBomb )
+				return false;
+
 			iBombType = DOD_BOMB_PLANT;
+		}
+		else if ( (pBombTarget == nullptr) || (CClassInterface::getDODBombState(pBombTarget) != DOD_BOMB_STATE_ACTIVE) )
+		{
+			// points can have two targets: the one I can see may not be the armed one
+			edict_t *pArmed = CDODMod::m_Flags.getActiveBombTarget(id);
+
+			if ( pArmed == nullptr )
+				return false;
+
+			pBombTarget = pArmed;
+			vGoal = CBotGlobals::entityOrigin(pArmed);
+		}
 
 		if ( (iBombType == DOD_BOMB_PLANT) && CDODMod::m_Flags.isTeamMatePlanting(m_pEdict,m_iTeam,id) )
 			return false; // teammate doing the job already
@@ -3322,7 +3339,7 @@ void CDODBot :: getTasks (unsigned iIgnore)
 
 		if ( CDODMod::mapHasBombs() )
 		{
-			ADD_UTILITY(BOT_UTIL_PICKUP_BOMB,!m_bHasBomb,hasSomeConditions(CONDITION_NEED_BOMB) ? 1.0f : 0.75f)
+			ADD_UTILITY(BOT_UTIL_PICKUP_BOMB,!m_bHasBomb && (CDODMod::m_Flags.getNumBombsToPlant(m_iTeam) > 0),hasSomeConditions(CONDITION_NEED_BOMB) ? 1.0f : 0.75f)
 		}
 	}
 	// bomb map
@@ -3427,7 +3444,7 @@ void CDODBot :: getTasks (unsigned iIgnore)
 
 			// attack the flag if I've reached the last one
 			ADD_UTILITY_DATA_VECTOR(BOT_UTIL_PLANT_NEAREST_BOMB,
-				CDODMod::m_Flags.canPlantBomb(m_iTeam,iFlagID),fPlantUtil+randomFloat(-0.05f,0.1f),iFlagID,vBomb)
+				m_bHasBomb && CDODMod::m_Flags.canPlantBomb(m_iTeam,iFlagID),fPlantUtil+randomFloat(-0.05f,0.1f),iFlagID,vBomb)
 			// attack the flag if I've reached the last one
 			ADD_UTILITY_DATA_VECTOR(BOT_UTIL_DEFEND_NEAREST_BOMB,
 				CDODMod::m_Flags.canDefendBomb(m_iTeam,iFlagID),fDefendBombUtil+randomFloat(-0.05f,0.1f),iFlagID,vBomb)
